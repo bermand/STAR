@@ -33,30 +33,23 @@ from ..config import cfg
 
 
 class STAR(nn.Module):
-    def __init__(self,gender='female',num_betas=10,use_cuda=True):
+    def __init__(self, gender='female', num_betas=10, use_cuda=True, model_path=None):
         """
-        Initialize STAR model.
-        
+        STAR human body model.
         Args:
             gender (str): 'male', 'female', or 'neutral'
-            num_betas (int): Number of shape parameters
-            use_cuda (bool): Whether to use CUDA tensors. Default True for backward compatibility.
-                           If True but CUDA is unavailable, will raise an error.
-                           If False, will use CPU tensors.
+            num_betas (int): number of shape parameters
+            use_cuda (bool): whether to use CUDA (GPU). If False, run on CPU. Default: True.
+            model_path (str, optional): custom path to the model file. If None, use default for gender.
         """
         super(STAR, self).__init__()
 
         if gender not in ['male','female','neutral']:
             raise RuntimeError('Invalid Gender')
-        
-        # Validate CUDA availability if requested
-        if use_cuda and not torch.cuda.is_available():
-            raise RuntimeError('CUDA is not available but use_cuda=True was specified')
-            
-        self.use_cuda = use_cuda
-        self.device = torch.device('cuda' if use_cuda else 'cpu')
 
-        if gender == 'male':
+        if model_path is not None:
+            path_model = model_path
+        elif gender == 'male':
             path_model = cfg.path_male_star
         elif gender == 'female':
             path_model = cfg.path_female_star
