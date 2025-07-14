@@ -33,11 +33,28 @@ from ..config import cfg
 
 
 class STAR(nn.Module):
-    def __init__(self,gender='female',num_betas=10):
+    def __init__(self,gender='female',num_betas=10,use_cuda=True):
+        """
+        Initialize STAR model.
+        
+        Args:
+            gender (str): 'male', 'female', or 'neutral'
+            num_betas (int): Number of shape parameters
+            use_cuda (bool): Whether to use CUDA tensors. Default True for backward compatibility.
+                           If True but CUDA is unavailable, will raise an error.
+                           If False, will use CPU tensors.
+        """
         super(STAR, self).__init__()
 
         if gender not in ['male','female','neutral']:
             raise RuntimeError('Invalid Gender')
+        
+        # Validate CUDA availability if requested
+        if use_cuda and not torch.cuda.is_available():
+            raise RuntimeError('CUDA is not available but use_cuda=True was specified')
+            
+        self.use_cuda = use_cuda
+        self.device = torch.device('cuda' if use_cuda else 'cpu')
 
         if gender == 'male':
             path_model = cfg.path_male_star
@@ -57,25 +74,26 @@ class STAR(nn.Module):
         self.num_betas = num_betas
 
         # Model sparse joints regressor, regresses joints location from a mesh
-        self.register_buffer('J_regressor', torch.cuda.FloatTensor(J_regressor))
+        self.register_buffer('J_regressor', torch.tensor(J_regressor, dtype=torch.float32, device=self.device))
 
         # Model skinning weights
-        self.register_buffer('weights', torch.cuda.FloatTensor(star_model['weights']))
+        self.register_buffer('weights', torch.tensor(star_model['weights'], dtype=torch.float32, device=self.device))
         # Model pose corrective blend shapes
-        self.register_buffer('posedirs', torch.cuda.FloatTensor(star_model['posedirs'].reshape((-1,93))))
+        self.register_buffer('posedirs', torch.tensor(star_model['posedirs'].reshape((-1,93)), dtype=torch.float32, device=self.device))
         # Mean Shape
-        self.register_buffer('v_template', torch.cuda.FloatTensor(star_model['v_template']))
+        self.register_buffer('v_template', torch.tensor(star_model['v_template'], dtype=torch.float32, device=self.device))
         # Shape corrective blend shapes
-        self.register_buffer('shapedirs', torch.cuda.FloatTensor(np.array(star_model['shapedirs'][:,:,:num_betas])))
+        self.register_buffer('shapedirs', torch.tensor(np.array(star_model['shapedirs'][:,:,:num_betas]), dtype=torch.float32, device=self.device))
         # Mesh traingles
-        self.register_buffer('faces', torch.from_numpy(star_model['f'].astype(np.int64)))
+        self.register_buffer('faces', torch.tensor(star_model['f'], dtype=torch.int64, device=self.device))
         self.f = star_model['f']
         # Kinematic tree of the model
-        self.register_buffer('kintree_table', torch.from_numpy(star_model['kintree_table'].astype(np.int64)))
+        self.register_buffer('kintree_table', torch.tensor(star_model['kintree_table'], dtype=torch.int64, device=self.device))
 
         id_to_col = {self.kintree_table[1, i].item(): i for i in range(self.kintree_table.shape[1])}
-        self.register_buffer('parent', torch.LongTensor(
-            [id_to_col[self.kintree_table[0, it].item()] for it in range(1, self.kintree_table.shape[1])]))
+        self.register_buffer('parent', torch.tensor(
+            [id_to_col[self.kintree_table[0, it].item()] for it in range(1, self.kintree_table.shape[1])], 
+            dtype=torch.long, device=self.device))
 
         self.verts = None
         self.J = None
@@ -85,6 +103,9 @@ class STAR(nn.Module):
         '''
             STAR forward pass given pose, betas (shape) and trans
             return the model vertices and transformed joints
+            
+            Note: Input tensors should be on the same device as the model.
+            
         :param pose: pose  parameters - A batch size x 72 tensor (3 numbers for each joint)
         :param beta: beta  parameters - A batch size x number of betas
         :param beta: trans parameters - A batch size x 3
@@ -121,15 +142,15 @@ class STAR(nn.Module):
         J_ = J.clone()
         J_[:, 1:, :] = J[:, 1:, :] - J[:, self.parent, :]
         G_ = torch.cat([R, J_[:, :, :, None]], dim=-1)
-        pad_row = torch.FloatTensor([0, 0, 0, 1]).to(device).view(1, 1, 1, 4).expand(batch_size, 24, -1, -1)
+        pad_row = torch.tensor([0, 0, 0, 1], dtype=torch.float32, device=device).view(1, 1, 1, 4).expand(batch_size, 24, -1, -1)
         G_ = torch.cat([G_, pad_row], dim=2)
         G = [G_[:, 0].clone()]
         for i in range(1, 24):
             G.append(torch.matmul(G[self.parent[i - 1]], G_[:, i, :, :]))
         G = torch.stack(G, dim=1)
 
-        rest = torch.cat([J, torch.zeros(batch_size, 24, 1).to(device)], dim=2).view(batch_size, 24, 4, 1)
-        zeros = torch.zeros(batch_size, 24, 4, 3).to(device)
+        rest = torch.cat([J, torch.zeros(batch_size, 24, 1, dtype=torch.float32, device=device)], dim=2).view(batch_size, 24, 4, 1)
+        zeros = torch.zeros(batch_size, 24, 4, 3, dtype=torch.float32, device=device)
         rest = torch.cat([zeros, rest], dim=-1)
         rest = torch.matmul(G, rest)
         G = G - rest
